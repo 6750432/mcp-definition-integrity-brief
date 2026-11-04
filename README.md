@@ -46,4 +46,4 @@ no public network, no credentials, no production servers
 
 ## License
 
-No license declared yet. Contact the author before redistributing.
+MIT. See [LICENSE](LICENSE).

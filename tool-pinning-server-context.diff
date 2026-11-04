@@ -1,0 +1,127 @@
+--- a/0000-client-held-tool-definition-pinning.md
++++ b/0000-client-held-tool-definition-pinning.md
+@@ -16,10 +16,12 @@
+ tool maliciously has no reason to send one.
+ 
+ This SEP defines a Tool Definition Digest: SHA-256 over the RFC 8785 (JCS) canonical form
+-of a `Tool` object with its top-level `_meta` removed. It specifies how a host that pins
+-tools uses the digest. The host computes it itself, over the definition it received on
+-the connection the model will use, and re-checks it on every `tools/list` result. A tool
+-whose digest no longer matches stays hidden from the model until it is approved again.
++of a `Tool` object with its top-level `_meta` removed, plus a Server Context Digest for the
++server-level `instructions` and identity that are not part of a `Tool` object. It specifies
++how a host that pins tools uses the digest. The host computes it itself, over the definition
++it received on the connection the model will use, and re-checks it on every `tools/list`
++result. A tool or server context whose digest no longer matches stays hidden from the model
++until it is approved again.
+ 
+ The same digest and rules apply to prompt and resource template definitions. Nothing on
+ the wire changes. Because the digest is deterministic, hosts, gateways,
+@@ -105,8 +107,11 @@
+    characters.
+ 
+ Every other member of `Tool` is covered: `name`, `title`, `description`, `inputSchema`,
+-`outputSchema`, `annotations` and `icons`, and any member added by a later revision of the
+-specification.
++`outputSchema`, `annotations`, `icons`, `execution` (when present; for example
++`execution.taskSupport`), and any member added by a later revision of the specification. A
++digest over the four fields commonly used for tool approval (`name`, `description`,
++`inputSchema`, `annotations`) would miss `title`, `outputSchema`, `icons` and `execution`;
++implementations SHOULD NOT use that four-field subset.
+ 
+ A definition has no digest if it contains any number that is not finite or whose
+ magnitude is 2^53 or greater, or if it cannot otherwise be serialized under RFC 8785. The
+@@ -115,12 +120,34 @@
+ result as a parser that keeps them exact. A host that pins MUST treat a tool without a
+ digest as unapproved.
+ 
++### 1.1 Server Context Digest
++
++`instructions` from `initialize` / `server/discover` is natural-language guidance that the
++client may place in the model context. It is not part of any `Tool` object, so the digest in
++section 1 does not cover it. `serverInfo.name` and `serverInfo.version` likewise identify
++the surface that was observed but are not part of a `Tool`.
++
++A host that pins SHOULD compute a Server Context Digest over:
++
++1. `serverInfo.name` (string; empty if absent),
++2. `serverInfo.version` (string; empty if absent),
++3. `instructions` (string; absent normalized to `""`),
++
++serialized with RFC 8785 and hashed with SHA-256, in the same `sha256:` form. The host MUST
++store this digest with the tool pins and MUST re-check it whenever it re-checks
++`tools/list`. A changed instructions string is a mismatch even when every Tool digest is
++unchanged. A host that presents `instructions` to the model MUST NOT present a changed
++value until it is approved under host policy.
++
++`serverInfo.title`, if present, is display metadata and is not part of this digest.
++
+ ### 2. Tool Set Digest (optional)
+ 
+ To compare whole servers, the Tool Set Digest is SHA-256 over the RFC 8785 serialization of
+ the array of Tool Definition Digest strings for every tool in the result, sorted by tool
+ `name`, in the same `sha256:` form. It is computed after all pages of a paginated result are
+-collected.
++collected. The Tool Set Digest covers `Tool` objects only; it does not cover `serverInfo` or
++`instructions` (see section 1.1).
+ 
+ ### 3. Host behavior when pinning
+ 
+@@ -132,6 +159,13 @@
+ behind it pins the definitions the gateway serves. A host that pins tool definitions MUST
+ follow these rules.
+ 
++The pin key is the server identity plus the authorization scope and protocol version under
++which the definition was observed. The digest input is the definition only; scope and
++protocol version are comparison keys, not digest fields. A dual-era server may serve
++different tool sets in the legacy and modern eras (the official Everything server serves 16
++tools in legacy and 22 in modern), and a server may serve different tools to different
++authorization scopes. Do not compare a digest across scopes or eras.
++
+ 1. **Compute locally.** The host MUST compute the digest itself, over the definition it
+    received on the connection the model will use. It MUST NOT accept, in place of its own
+    computation, a digest supplied by the server, by another connection or by any third
+@@ -182,6 +216,11 @@
+ different clients, which is the behavior Pillar reported and which no single observer can
+ see. This SEP defines no protocol for publishing or exchanging observations.
+ 
++Tool order is not part of either digest: the Tool Set Digest sorts by `name`. Servers
++SHOULD keep the order deterministic; a host MAY record the observed order and warn when it
++changes, but an order change alone is not a definition change and MUST NOT be treated as a
++pin mismatch.
++
+ ## Rationale
+ 
+ ### Why the host computes the digest
+@@ -249,6 +288,11 @@
+ when a tool is called: a server can keep a definition stable and change its behavior, and
+ detecting that needs execution-level controls outside this SEP.
+ 
++`instructions` is model-facing text outside every `Tool` object. A server can keep every
++Tool digest stable and change only `instructions`; the Server Context Digest in section 1.1
++is what makes that change visible. Hosts that do not pin it should treat `instructions` as
++untrusted input.
++
+ Deadbugz also poisoned `prompts/get` responses. Section 4 pins the prompt definitions
+ those responses come from, but the returned messages themselves are not pinned.
+ 
+@@ -279,6 +323,13 @@
+ pinning client passes it, and a client that keeps approvals by tool name fails it at the
+ switch.
+ 
++### Test vectors to add
++
++- instructions-only change: all Tool digests unchanged, Server Context Digest changes.
++- `execution.taskSupport` change: Tool digest changes; a four-field digest does not.
++- same server, legacy vs modern: the pin key includes `protocolVersion`.
++- tool-order rotation: Tool and Tool Set digests unchanged; a separate order warning.
++
+ ## Open Questions
+ 
+ 1. Description changes are the most common kind: 629 of the 861 publishers changed
+@@ -290,3 +341,5 @@
+    is "unpredictable", so two parties can parse the same bytes into different definitions
+    and compute different digests. Should a definition containing duplicate member names have no digest? Detecting
+    them needs the raw message text, which most SDKs do not expose.
++4. Should the Registry carry Server Context Digests (section 1.1), so instructions changes
++   are visible to observers that never connect?
